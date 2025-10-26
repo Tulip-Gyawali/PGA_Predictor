@@ -1,10 +1,12 @@
 # src/models/train_ann.py
-import torch
-import torch.nn as nn
-import torch.optim as optim
 import os
 import json
 import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
+from src.data.preprocess import Preprocessor, P_WAVE_FEATURES, MODELS_DIR
 
 DEFAULT = {
   "hidden_sizes": [428, 442, 220],
@@ -32,46 +34,63 @@ class MLP(nn.Module):
     def forward(self, x):
         return self.net(x).squeeze(-1)
 
-def train_ann(X_train, y_train, X_val=None, y_val=None, cfg=None, save_path="models/ann_model.pt", device="cpu"):
+def train_and_save_ann(df, target_col="PGA", cfg=None, save_prefix="models/ann"):
     cfg = cfg or DEFAULT
-    device = torch.device(device)
-    model = MLP(X_train.shape[1], hidden_sizes=cfg["hidden_sizes"], dropout=cfg["dropout"]).to(device)
+    features = P_WAVE_FEATURES
+    X_df = df[features]
+    y_raw = df[target_col].values
+    y_log = np.log1p(y_raw)
+
+    # preprocessor
+    pre = Preprocessor(feature_list=features)
+    Xp = pre.fit_transform(X_df.values, y_log)
+
+    # torch dataset
+    X_tensor = torch.tensor(Xp, dtype=torch.float32)
+    y_tensor = torch.tensor(y_log, dtype=torch.float32)
+    dataset = torch.utils.data.TensorDataset(X_tensor, y_tensor)
+    loader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=True)
+
+    model = MLP(Xp.shape[1], hidden_sizes=cfg["hidden_sizes"], dropout=cfg["dropout"])
     opt = optim.Adam(model.parameters(), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
     loss_fn = nn.MSELoss()
-    batch_size = 64
-    n_samples = X_train.shape[0]
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+
     for epoch in range(int(cfg["epochs"])):
         model.train()
-        perm = np.random.permutation(n_samples)
-        for i in range(0, n_samples, batch_size):
-            idx = perm[i:i+batch_size]
-            xb = torch.tensor(X_train[idx], dtype=torch.float32, device=device)
-            yb = torch.tensor(y_train[idx], dtype=torch.float32, device=device)
+        epoch_loss = 0.0
+        for xb, yb in loader:
+            xb = xb.to(device); yb = yb.to(device)
             pred = model(xb)
             loss = loss_fn(pred, yb)
             opt.zero_grad(); loss.backward(); opt.step()
-        # (optional) validation logging every 50 epochs
-        if (epoch+1) % 50 == 0 and X_val is not None:
-            model.eval()
-            with torch.no_grad():
-                pred_val = model(torch.tensor(X_val, dtype=torch.float32, device=device)).cpu().numpy()
-                val_loss = ((pred_val - y_val)**2).mean()
-            print(f"Epoch {epoch+1}/{cfg['epochs']} val_mse={val_loss:.6f}")
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    torch.save(model.state_dict(), save_path)
-    return model
+            epoch_loss += loss.item() * xb.size(0)
+        if (epoch+1) % 50 == 0:
+            avg = epoch_loss / len(dataset)
+            print(f"Epoch {epoch+1}/{cfg['epochs']} loss={avg:.6f}")
 
-def load_ann_model(path="models/ann_model.pt", input_dim=None, device="cpu"):
-    assert input_dim is not None, "Provide input_dim to load ANN architecture"
+    # save model and preprocessor
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    model_path = os.path.join(MODELS_DIR, "ann_model.pt")
+    torch.save(model.state_dict(), model_path)
+    pre.save(os.path.join(MODELS_DIR, "preprocessor.joblib"))
+    meta = {"features": features, "target_col": target_col, "cfg": cfg}
+    with open(os.path.join(MODELS_DIR, "ann_metadata.json"), "w") as f:
+        json.dump(meta, f)
+    return model_path, os.path.join(MODELS_DIR, "preprocessor.joblib")
+
+def load_ann_model(path=None, input_dim=None, device="cpu"):
+    assert input_dim is not None, "pass input_dim when loading ANN architecture"
     model = MLP(input_dim, hidden_sizes=DEFAULT["hidden_sizes"], dropout=DEFAULT["dropout"])
     model.load_state_dict(torch.load(path, map_location=device))
     model.eval()
     return model
 
-def ann_predict_numpy(model, X):
-    import torch
+def ann_predict_numpy(model, X_numpy):
     model.eval()
     with torch.no_grad():
-        t = torch.tensor(X, dtype=torch.float32)
+        t = torch.tensor(X_numpy, dtype=torch.float32)
         out = model(t).cpu().numpy()
     return out
