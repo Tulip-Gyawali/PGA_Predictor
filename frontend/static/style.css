@@ -1,0 +1,4 @@
+/* frontend/static/style.css */
+body { font-family: Arial, sans-serif; margin: 24px; max-width: 900px; }
+h1 { color: #113355; }
+form { margin: 16px 0; padding: 12px; border: 1px solid #ddd; border-radius: 6px; }
