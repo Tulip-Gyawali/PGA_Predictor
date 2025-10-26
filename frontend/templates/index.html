@@ -1,0 +1,27 @@
+<!-- frontend/templates/index.html -->
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>EEW PGA Demo</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <h1>EEW PGA Predictor (Demo)</h1>
+  <form method="post" enctype="multipart/form-data">
+    <label>Upload features CSV:</label>
+    <input type="file" name="file" accept=".csv" required><br><br>
+    <label>Model:</label>
+    <select name="model_type">
+      <option value="xgb">XGBoost (recommended)</option>
+      <option value="ann">ANN</option>
+    </select><br><br>
+    <button type="submit">Predict</button>
+  </form>
+
+  {% if result %}
+    <h2>Result</h2>
+    <pre>{{ result }}</pre>
+  {% endif %}
+</body>
+</html>
